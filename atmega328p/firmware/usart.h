@@ -1,0 +1,30 @@
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// 
+//
+//
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#ifndef __USART_H__
+#define __USART_H__
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <avr/pgmspace.h>
+
+#if defined (__AVR_ATmega328P__)
+
+#include "usart_atmega8.h"
+
+#else
+#error "Device type not defined"
+#endif
+
+void putHex( uint8_t byte );
+
+#define PUTS( x ) puts_P( PSTR( x ) )
+
+#endif

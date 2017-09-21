@@ -1,0 +1,39 @@
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// 
+//
+//
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#include <avr/interrupt.h>
+#include <avr/sleep.h>
+#include "sleep.h"
+#include "rtc-atmega8.h"
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+// static void sleepIdleWithPowerManagement() {
+//    cli();
+//    set_sleep_mode( SLEEP_MODE_IDLE );
+//    sleep_enable();
+//    sei();
+//    sleep_cpu();
+//    sleep_disable();
+//    sei();
+// }
+
+// static void sleepIdleWithBusyWaiting() {
+//   uint32_t t0 = getTicks();
+//   uint32_t t1 = getTicks();
+//   while( t1 == t0 ) {
+//     t1 = getTicks();
+//   }
+// }
+
+void sleepIdle() {
+   // sleepIdleWithBusyWaiting();
+}
