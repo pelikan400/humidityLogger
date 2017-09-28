@@ -22,8 +22,10 @@ CLOCK      = 16500000
 PROGRAMMER = #-c stk500v2 -P avrdoper
 
 CFLAGS  = -Iusbdrv -I. -DDEBUG_LEVEL=0
-OBJECTS = usbdrv/usbdrv.o usbdrv/usbdrvasm.o usbdrv/oddebug.o main.o
-OBJECTS = usbdrv/usbdrvasm.o usbdrv/usbdrv.o main.o
+OBJECTS = usbdrv/usbdrv.o usbdrv/usbdrvasm.o usbdrv/oddebug.o
+OBJECTS += uart_attiny85_bitbang.o twi_attiny85_bitbang.o
+OBJECTS += main.o
+# OBJECTS = usbdrv/usbdrvasm.o usbdrv/usbdrv.o main.o
 
 FUSES      = # -U hfuse:w:0xd9:m -U lfuse:w:0x24:m
 

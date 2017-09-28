@@ -16,195 +16,27 @@
 #include "usbdrv.h"
 
 #include "RingBuffer.h"
+#include "uart.h"
+#include "twi.h"
 
 #include <stdio.h>
+
+
+#define TEST_WATCHDOG  0
+#define TEST_USB 0
+#define TEST_UART 0
+#define TEST_TWI 1
+#define DEBUG 0
 
 // #include "oddebug.h"        /* This is also an example for using debug macros */
 
 #define DELAY_CLOCKS 100000l
 
-#define SCL _BV( PORTB2 )
-#define SDA _BV( PORTB0 )
-#define TWI_TIMING 15u
-
-#define SDA_LOW      DDRB |= SDA
-#define SDA_HIGH     DDRB &= ~SDA
-#define SCL_LOW      DDRB |= SCL
-#define SCL_HIGH     DDRB &= ~SCL
-
-#define _NOP() do { __asm__ __volatile__ ("nop"); } while (0)
-
-#define PUTS( x ) puts_P( PSTR( x ) )
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// TWI using USI
-class TWI {
-public:
-   uint8_t state;
-   
-public:
-   TWI();
-   void init();
-   void sendStart();
-   void sendStop();
-   uint8_t sendMessage( uint8_t adr, uint8_t* msg, uint16_t size );
-   uint8_t receiveMessage( uint8_t adr, uint8_t* msg, uint16_t size );
-private:
-   bool timeTWIBit( bool monitorSCL );
-   uint8_t sendByte( uint8_t x );
-   uint8_t receiveByte( uint8_t * r, uint8_t ack );
-   uint8_t writeBit( uint8_t bit );
-   uint8_t readBit();
-};
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-bool TWI::timeTWIBit( bool monitorSCL ) {
-   _NOP();
-   _NOP();
-   _NOP();
-   while( monitorSCL && !( PINB & SCL ) ) {
-      _NOP();
-   }
-   for( uint8_t i = 0; i < TWI_TIMING; ++i ) {
-      _NOP();
-   }
-   return true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-TWI::TWI() {
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void TWI::init() {
-   SCL_HIGH;
-   SDA_HIGH;
-   PORTB &= ~SCL;  // do not activate pull-up because the 3.3V side allready have it active
-   PORTB &= ~SDA;  // do not activate pull-up because the 3.3V side allready have it active
-   timeTWIBit( false );
-}
-
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void TWI::sendStart() {
-   // assume, that SCL is already HIGH because the I2C bus is idle
-   SDA_LOW;
-   timeTWIBit( false );
-   SCL_LOW;
-   timeTWIBit( false );
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-uint8_t TWI::writeBit( uint8_t bit ) {
-   // assume SCL is LOW
-   if( bit ) {
-      SDA_HIGH; 
-   }
-   else {
-      SDA_LOW;
-   }
-   timeTWIBit( false );
-   SCL_HIGH;
-   timeTWIBit( true );
-   SCL_LOW;
-   timeTWIBit( false );
-   
-   return 0;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-uint8_t TWI::readBit() {
-   SDA_HIGH;
-   timeTWIBit( false );
-   SCL_HIGH;
-   timeTWIBit( true );
-   uint8_t x = ( PINB & SDA ) ? 1 : 0;
-   SCL_LOW;
-   timeTWIBit( false );
-
-   return x;
-}
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-uint8_t TWI::sendByte( uint8_t x ) {
-   for( uint8_t i = 0; i < 8; ++i ) {
-      writeBit( x & 0x80 );
-      x = x << 1;
-   }
-
-   // read ACK bit
-   uint8_t ack = readBit();
-   return ack;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-uint8_t TWI::receiveByte( uint8_t * r, uint8_t ack ) {
-   uint8_t x = 0;
-   for( uint8_t i = 0; i < 8; ++i ) {
-      x = x << 1 | readBit();
-   }
-
-   *r = x;
-   // read ACK bit
-   uint8_t ack1 = writeBit( ack );
-   return ack1;
-}
-   
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void TWI::sendStop() {
-   // assume SCL is LOW
-   SDA_LOW;
-   timeTWIBit( false );
-   SCL_HIGH;
-   timeTWIBit( true );
-   SDA_HIGH;
-   timeTWIBit( false );
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-uint8_t TWI::sendMessage( uint8_t adr, uint8_t* msg, uint16_t size ) {
-   sendStart();
-   uint8_t ack = sendByte( adr << 1 );
-   
-   for( uint16_t c = 0; c < size; ++c ) {
-      ack = sendByte( *msg++ );
-   }
-   sendStop();
-   
-   return ack;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-uint8_t TWI::receiveMessage( uint8_t adr, uint8_t* msg, uint16_t size ) {
-   sendStart();
-   uint8_t ack = sendByte( adr << 1  | 1 );
-   
-   for( uint16_t c = 0; c < size; ++c ) {
-      ack = receiveByte( msg++, c+1 < size ? 0 : 1 );
-   }
-   sendStop();
-   
-   return ack;
-}
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-TWI twi;
+#if DEBUG 
+#define LOG_DEBUG( x ) PUTS( x )
+#else 
+#define LOG_DEBUG( x ) 
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -212,25 +44,88 @@ TWI twi;
 #define I2C_DEVICE_ADDRESS_AT24C32   0x50
 #define I2C_DEVICE_ADDRESS_DC1307    0x68
 
-uint8_t setTimeDS1307() {
-   static bool firstTime = true;
-   if( firstTime ) {
-      uint8_t buffer[ 9 ] = { 0x00, 0x00,  0x51, 0x01, 0x07, 0x16, 0x09, 0x17, 0x00 };
-      twi.sendMessage( I2C_DEVICE_ADDRESS_DC1307, buffer, 8 );
-   }
-   return 0;
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+uint8_t writeI2C( uint8_t i2cAddress, uint8_t * buffer, uint8_t bufferSize ) {
+  return twi.sendMessage( i2cAddress, buffer, bufferSize );
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-uint8_t readDS1307() {
-   uint8_t buffer[ 8 ] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-   twi.sendMessage( I2C_DEVICE_ADDRESS_DC1307, buffer, 1 );
-   twi.receiveMessage( I2C_DEVICE_ADDRESS_DC1307, buffer, 8 );
-   return 0;
+uint8_t writeI2CCommand( uint8_t i2cAddress, uint8_t * buffer, uint8_t bufferSize, uint8_t command ) {
+  uint8_t commandBuffer[ 1 ];
+  commandBuffer[ 0 ] = command;
+  twi.sendMessage( i2cAddress, commandBuffer, 1 );
+  return writeI2C( i2cAddress, buffer, bufferSize );
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+uint8_t writeI2CTwoByteCommand( uint8_t i2cAddress, uint8_t * buffer, uint8_t bufferSize, uint16_t command ) {
+  uint8_t commandBuffer[ 2 ];
+  commandBuffer[ 0 ] = command & 0xff;
+  commandBuffer[ 1 ] = ( command >> 8 ) & 0xff;
+  twi.sendMessage( i2cAddress, commandBuffer, 2 );
+  return writeI2C( i2cAddress, buffer, bufferSize );
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+uint8_t readI2C( uint8_t i2cAddress, uint8_t * buffer, uint8_t bufferSize ) {
+  return twi.receiveMessage( i2cAddress, buffer, bufferSize );
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+uint8_t readI2CCommand( uint8_t i2cAddress, uint8_t * buffer, uint8_t bufferSize, uint8_t command ) {
+  uint8_t commandBuffer[ 1 ];
+  commandBuffer[ 0 ] = command;
+  twi.sendMessage( i2cAddress, commandBuffer, 1 );
+  return readI2C( i2cAddress, buffer, bufferSize );
+}
+
+uint8_t readI2CTwoByteCommand( uint8_t i2cAddress, uint8_t * buffer, uint8_t bufferSize, uint16_t command ) {
+  uint8_t commandBuffer[ 2 ];
+  commandBuffer[ 0 ] = command & 0xff;
+  commandBuffer[ 1 ] = ( command >> 8 ) & 0xff;
+  twi.sendMessage( i2cAddress, commandBuffer, 2 );
+  return readI2C( i2cAddress, buffer, bufferSize );
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// #define I2C_DEVICE_ADDRESS_HTU21D    0x40
+// #define I2C_DEVICE_ADDRESS_AT24C32   0x50
+// #define I2C_DEVICE_ADDRESS_DC1307    0x68
+
+#define HTU21D_TEMPERATURE  0xe3
+#define HTU21D_HUMIDITY     0xe5
+
+void testLoopHumidity() {
+  uint8_t timeBuffer[ 8 ];
+  uint8_t buffer[ 32 ];
+  while( 1 ) {
+    // first read actual time 
+    LOG_DEBUG( "# Read time from DC1307" );
+    readI2CCommand( I2C_DEVICE_ADDRESS_DC1307, timeBuffer, 8, 0 ); 
+
+    LOG_DEBUG( "# Read EEPROM content" );
+    for( uint16_t adr = 0; adr < 4096; adr += 32 ) {
+      readI2CTwoByteCommand( I2C_DEVICE_ADDRESS_AT24C32, buffer, 32, adr ); 
+    }
+
+    LOG_DEBUG( "# Read temperature" );
+    readI2CCommand( I2C_DEVICE_ADDRESS_HTU21D, timeBuffer, 8, HTU21D_TEMPERATURE ); 
+    
+    LOG_DEBUG( "# Read humidity" );
+    readI2CCommand( I2C_DEVICE_ADDRESS_HTU21D, timeBuffer, 8, HTU21D_HUMIDITY ); 
+
+    for( uint32_t delayCounter = 0; delayCounter < DELAY_CLOCKS;  ) {
+      ++delayCounter;
+    }
+  }
+}
+
 
 /* ------------------------------------------------------------------------- */
 /* ----------------------------- USB interface ----------------------------- */
@@ -316,129 +211,29 @@ usbMsgLen_t usbFunctionSetup( uchar data[8] ) {
 }
 
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 ISR( WDT_vect ) {
   // do nothing, just wake up from sleep 
-  PORTB ^= _BV( PORTB1 );
+  // PORTB ^= _BV( PORTB1 );
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-class USARTBitBangTimer0 {
-public:
-   uint8_t currentByte;
-   uint8_t bitCounter;
-   RingBuffer txBuffer;
-   
-public:
-   USARTBitBangTimer0();
-   void init();
-   int sendc( char c );
-};
-
-USARTBitBangTimer0 usart;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-USARTBitBangTimer0::USARTBitBangTimer0() {
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-static void initializeTimer0For9600Hz( ) {
-  // initialize Timer0 
-  cli();
-  // halt the Timer0 and prescaler
-  GTCCR = _BV( TSM );
-  // WGM mode normal and set OC0A on compare match
-  TCCR0A = _BV( WGM01 );
-  // set prescaler to clk/8 
-  TCCR0B = _BV( CS01 );
-  TCNT0 = 0;
-  // for 9600 baud
-  OCR0A = 215; 
-  OCR0B = 0;
-  TIMSK = 0; 
-  // TIMSK = _BV( OCIE0A ); 
-  // start counter
-  GTCCR = 0;
-  sei();
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-ISR( TIMER0_COMPA_vect ) {
-   if( usart.bitCounter < 8 ) {
-      if( usart.currentByte & 0x01 ) {
-         // send 1
-         PORTB  |= _BV( PORTB1 );  
-      }
-      else {
-         // send 0
-         PORTB &= ~_BV( PORTB1 );  
-      }
-      usart.currentByte >>= 1;
-      ++usart.bitCounter;
-   }
-   else if( usart.bitCounter == 8 ) {
-      // send stop bit
-      PORTB  |= _BV( PORTB1 );  
-      ++usart.bitCounter;
-   }
-   else {
-      if( usart.txBuffer.empty() ) {
-         // disable interrupts
-         TIMSK = 0; 
-      }
-      else {
-         // send start bit
-         usart.currentByte = usart.txBuffer.pop();
-         usart.bitCounter = 0;
-         PORTB &= ~_BV( PORTB1 );  
-      }
-   }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-static FILE stream;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-static int usart0_putc( char c, FILE *stream )
-{
-   return usart.sendc( c );
-}
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void USARTBitBangTimer0::init() {
-  PORTB  |= _BV( PORTB1 );  
-  initializeTimer0For9600Hz();
-  currentByte = 0xff;
-  bitCounter = 8;
-
-  fdev_setup_stream( &stream, usart0_putc, NULL, _FDEV_SETUP_WRITE );
-  stdout = &stream;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-int USARTBitBangTimer0::sendc( char c ) {
-   cli();
-   while( txBuffer.full() ) {
-      sei();
-      for( uint8_t i = 0; i < TWI_TIMING; ++i ) {
-         _NOP();
-      }
-      // busy waiting
+void testWatchdog() {
+   while( 1 ) {
+      // wdt_reset();
       cli();
+      wdt_enable( WDTO_8S );
+      // enable interrupts, otherwise the chip will reset on WDT timeout
+      WDTCR |= _BV( WDIE );
+      set_sleep_mode( SLEEP_MODE_PWR_DOWN );
+      sleep_enable();
+      sei();
+      sleep_cpu();
+      sleep_disable();
+      PORTB ^= _BV( PORTB1 );
    }
-   txBuffer.push( c );
-   TIMSK = _BV( OCIE0A ); 
-   sei();
-   
-   return 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -446,13 +241,16 @@ int USARTBitBangTimer0::sendc( char c ) {
 /* ------------------------------------------------------------------------- */
 
 int main(void) {
-   uint8_t i;
-
    PORTB &= ~_BV( PORTB1 );  
    DDRB = _BV( DDB1 ) | _BV( DDB0 ) | _BV( DDB2 );  // make PB1 (LED), PB0, PB2 output
    PORTB ^= _BV( PORTB1 );  
 
-    wdt_enable( WDTO_1S );
+#if TEST_WATCHDOG   // use watchdog to wake up from power down
+   testWatchdog();
+   // wdt_enable( WDTO_1S );
+#endif
+   
+   wdt_disable();
     /* If you don't use the watchdog, replace the call above with a wdt_disable().
      * On newer devices, the status of the watchdog (on/off, period) is PRESERVED
      * OVER RESET!
@@ -463,46 +261,48 @@ int main(void) {
      */
     // odDebugInit();
     // DBG1(0x00, 0, 0);       /* debug output: main starts */
-    usbInit();
-    usbDeviceDisconnect();  /* enforce re-enumeration, do this while interrupts are disabled! */
-    i = 0;
-    while(--i){             /* fake USB disconnect for > 250 ms */
-        wdt_reset();
-        _delay_ms( 1 );
-    }
-    usbDeviceConnect();
 
-    sei();
-    bool hasUsbConnection = false;
-    if( hasUsbConnection ) {
+   // TODO : find out if MCU is connected to USB
+
+#if TEST_USB
+   uint8_t i;
+
+   usbInit();
+   usbDeviceDisconnect();  /* enforce re-enumeration, do this while interrupts are disabled! */
+   i = 0;
+   while(--i){             /* fake USB disconnect for > 250 ms */
+      wdt_reset();
+      _delay_ms( 1 );
+   }
+   usbDeviceConnect();
+   
+   sei();
+   bool hasUsbConnection = false;
+   if( hasUsbConnection ) {
       // communicate with PC 
       for(;;){                /* main event loop */
-        wdt_reset();
-	PORTB ^= _BV( PORTB0 );  
-        usbPoll();
-	PORTB &= ~_BV( PORTB1 );  
+         wdt_reset();
+         PORTB ^= _BV( PORTB0 );  
+         usbPoll();
+         PORTB &= ~_BV( PORTB1 );  
       }
-    }
-    else {
-       wdt_disable();
+   }
+#endif
 
-       usart.init();
-       while( 1 ) {
-          PUTS( "Hello world" );
+   uart.init();
+#if TEST_UART
+   while( 1 ) {
+      PUTS( "# Hello world" );
+       for( uint32_t delayCounter = 0; delayCounter < 300000l;  ) {
+          ++delayCounter;
        }
-      // communicate with humidity sensor
-      while( 0 ) {
-	wdt_reset();
-	wdt_enable( ( WDTO_8S | _BV( WDIE ) ) );
-	cli();
-	set_sleep_mode( SLEEP_MODE_PWR_DOWN );
-	sleep_enable();
-	sei();
-	sleep_cpu();
-	sleep_disable();
-      }
-    }
-    
+   }
+#endif
+
+#if TEST_TWI
+   testLoopHumidity();
+#endif
+   
     return 0;
 }
 
@@ -515,15 +315,6 @@ int mainOld(void)
    DDRB = _BV( DDB1 ) ;  // make PB1 (LED) output
    PORTB ^= _BV( PORTB1 );  
 
-   setTimeDS1307(); 
-    /* insert your hardware initialization here */
-    for(;;){
-       readDS1307();
-       for( uint32_t delayCounter = 0; delayCounter < DELAY_CLOCKS;  ) {
-          ++delayCounter;
-       }
-    }
-    
     return 0;   /* never reached */
 }
 
